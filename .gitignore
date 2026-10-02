@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+__pycache__/
+*.pyc
+.DS_Store
+# scratch output of scripts/record.py when pointed elsewhere
+/recordings/

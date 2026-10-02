@@ -1,0 +1,96 @@
+/* ---- the page around the game -----------------------------------------------
+   Tokens first: colibri's dashboard palette, dark by default and light under
+   [data-theme=light] (index.html sets it before the first paint). The canvas
+   reads the same tokens (lib/flappybri/render.ts), so pipes, sky and ground
+   follow the theme with the rest of the page. */
+@font-face{font-family:Bytesized;src:url("./assets/fonts/bytesized.ttf") format("truetype");font-weight:400;font-display:swap}
+
+:root{color-scheme:dark;--background:#212121;--foreground:#ececec;--card:#262626;--primary:#b2ccbb;--primary-foreground:#15221a;--secondary:#303030;--muted-foreground:#a1a1a1;--border:#383838;--input:#303030}
+:root[data-theme=light]{color-scheme:light;--background:#fafafa;--foreground:#242424;--card:#fff;--primary:#4e705b;--primary-foreground:#fff;--secondary:#f0f0f0;--muted-foreground:#747474;--border:#dfdfdf;--input:#f0f0f0}
+
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--background);color:var(--foreground);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{cursor:default;opacity:.4}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+svg.lucide{stroke-width:1.5}
+[hidden]{display:none!important}
+a{color:var(--primary)}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+/* As wide as the game and its panel (flappybri.css: the stage column, the gap,
+   the 384 px HUD), so the header lines up with them; centered. */
+.app{max-width:calc(max(320px,(100dvh - 250px) * 2 / 3) + 406px + 48px);margin:0 auto;padding:22px 24px 28px}
+.app-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 12px}
+.app-brand{display:flex;align-items:center;gap:12px;min-width:0}
+.app-mark{width:40px;height:33px;flex-shrink:0}
+.app-brand h1{margin:0;font:400 38px/1 Bytesized,ui-sans-serif,sans-serif;letter-spacing:.02em;text-transform:uppercase}
+.app-tools{display:flex;align-items:center;gap:6px}
+.app-lang{position:relative;display:flex;align-items:center;gap:6px;height:34px;padding:0 4px 0 10px;border:1px solid var(--border);border-radius:17px;color:var(--muted-foreground)}
+.app-lang svg{width:15px;height:15px;flex-shrink:0}
+.app-lang select{border:0;background:none;color:var(--foreground);font-size:12px;padding:6px 4px;max-width:150px;cursor:pointer;outline-offset:4px}
+.app-lang select option{background:var(--card);color:var(--foreground)}
+.app-icon{display:grid;place-items:center;width:34px;height:34px;border:1px solid var(--border);border-radius:50%;background:none;color:var(--muted-foreground)}
+.app-icon:hover{color:var(--foreground);background:var(--secondary)}
+.app-icon svg{width:16px;height:16px}
+.app-intro{margin:10px 0 18px;max-width:720px;font-size:13px;line-height:1.65;color:var(--muted-foreground)}
+.app-foot{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:26px;padding-top:14px;border-top:1px solid var(--border);font-size:11px;line-height:1.6;color:var(--muted-foreground)}
+
+/* ---- the connection panel: a card at the top of the controls ---------------- */
+.conn{display:grid;gap:8px}
+.conn-head{display:flex;align-items:center;gap:8px;min-width:0}
+.conn-head .fb-label{white-space:nowrap}
+.conn-dot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--muted-foreground);opacity:.45}
+.conn[data-state=ok] .conn-dot{background:var(--primary);opacity:1;box-shadow:0 0 8px var(--primary)}
+.conn[data-state=error] .conn-dot{background:var(--fb-danger);opacity:1}
+.conn[data-state=testing] .conn-dot{background:var(--primary);opacity:.7}
+.conn-fold{display:flex;align-items:center;gap:6px;min-width:0;margin-left:auto;padding:2px 2px 2px 6px;border:0;border-radius:8px;background:none;color:var(--muted-foreground)}
+.conn-fold:hover{color:var(--foreground)}
+.conn-fold code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px ui-monospace,SFMono-Regular,monospace}
+.conn-fold svg{flex-shrink:0;width:15px;height:15px;transition:transform .2s}
+.conn-fold[aria-expanded=true] svg{transform:rotate(180deg)}
+.conn-status{margin:0;font-size:12px;line-height:1.5;color:var(--foreground);overflow-wrap:anywhere}
+.conn[data-state=error] .conn-status{color:var(--fb-danger)}
+.conn[data-state=idle] .conn-status,.conn[data-state=edited] .conn-status,.conn[data-state=testing] .conn-status{color:var(--muted-foreground)}
+.conn-fields{display:grid;gap:10px;margin-top:4px;padding-top:12px;border-top:1px solid var(--border)}
+.conn-field{display:grid;gap:6px;min-width:0}
+.conn-field input{width:100%;height:36px;padding:0 11px;border:1px solid var(--border);border-radius:10px;background:var(--input);color:var(--foreground);font:12px ui-monospace,SFMono-Regular,monospace;outline:none}
+.conn-field input:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+.conn-field input::placeholder{color:var(--muted-foreground);opacity:.8}
+.conn-row{display:flex;align-items:flex-end;gap:8px}
+.conn-row .conn-field{flex:1}
+.conn-test{height:36px;flex-shrink:0}
+.conn-test:disabled{opacity:.7}
+
+@media(max-width:860px){
+  .app{max-width:640px}
+  .app-intro{margin-bottom:14px}
+}
+@media(max-width:560px){
+  .app{padding:16px 16px 22px}
+  .app-brand{gap:10px}
+  .app-brand h1{font-size:28px}
+  .app-mark{width:32px;height:26px}
+  .app-lang{padding-left:6px}
+  .app-lang svg{display:none}
+  .app-lang select{max-width:84px}
+  .conn-row{flex-wrap:wrap}
+  .conn-row .conn-field{flex-basis:100%}
+  .conn-test{width:100%;justify-content:center}
+  .conn-field input{font-size:16px}
+}
+
+@media(max-width:400px){
+  .app-brand{gap:8px}
+  .app-brand h1{font-size:24px}
+  .app-mark{width:28px;height:23px}
+  .app-lang select{max-width:76px}
+}
+
+/* Decorative motion off for anyone who asks; the game reads the same setting
+   and keeps only the motion it needs (lib/flappybri/render.ts). */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}

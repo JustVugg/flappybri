@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="colibri's hummingbird game, played live by a decision model through POST /v1/systemone." />
+    <meta name="theme-color" content="#212121" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/svg+xml" href="/colibri-icon.svg" />
+    <link rel="apple-touch-icon" href="/colibri-icon.svg" />
+    <title>FlappyBri</title>
+    <script>
+      /* The theme before the first paint: the saved choice, else the system's. */
+      (function () {
+        var theme = null
+        try { theme = localStorage.getItem("flappybri.theme") } catch (e) {}
+        if (theme !== "light" && theme !== "dark") {
+          theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
+        }
+        document.documentElement.setAttribute("data-theme", theme)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

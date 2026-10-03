@@ -12,9 +12,9 @@ const memory = (initial: Record<string, string> = {}) => {
 }
 
 describe("settings", () => {
-  it("start from the defaults: the too-low question, the state in words", () => {
+  it("start from the defaults: the where question, the state in words", () => {
     expect(DEFAULTS).toEqual({
-      mode: "human", form: "low", style: "words", threshold: 0.5, speed: SPEEDS.length - 1, match: true, autoRestart: true,
+      mode: "human", form: "where", style: "words", threshold: 0.5, speed: SPEEDS.length - 1, match: true, autoRestart: true,
     })
     expect(loadSettings(memory())).toEqual(DEFAULTS)
     expect(loadSettings(undefined)).toEqual(DEFAULTS)
@@ -24,7 +24,7 @@ describe("settings", () => {
     /* exactly what the page wrote before: no version, no style */
     const old = { mode: "model", form: "noul", threshold: 0.65, speed: 3, match: false, autoRestart: false }
     expect(loadSettings(memory({ [SETTINGS_KEY]: JSON.stringify(old) }))).toEqual({
-      mode: "model", form: "low", style: "words", threshold: 0.65, speed: 3, match: false, autoRestart: false,
+      mode: "model", form: "where", style: "words", threshold: 0.65, speed: 3, match: false, autoRestart: false,
     })
     /* "noul" was the old default, saved for everyone; "choice" was always picked by hand */
     expect(parseSettings({ ...old, form: "choice" }).form).toBe("choice")

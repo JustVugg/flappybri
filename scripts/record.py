@@ -107,7 +107,7 @@ def serve_page(dist, upstream):
 
 # The page's settings (src/lib/settings.ts, version 2): model mode, the
 # question and the style from the command line, "Match the model's pace" on.
-SETTINGS = {"version": 2, "mode": "model", "form": "low", "style": "words", "threshold": 0.5, "speed": 8,
+SETTINGS = {"version": 2, "mode": "model", "form": "where", "style": "words", "threshold": 0.5, "speed": 8,
             "match": True, "autoRestart": True}
 
 
@@ -126,6 +126,16 @@ def prepare(context, base_url, key, theme, args):
 
 def score(page):
     return int(page.locator(".fb-tile strong").first.inner_text().strip() or 0)
+
+
+def hud(page):
+    """The panel's numbers as the page shows them: score, best, latency, decisions per second."""
+    tiles = page.locator(".fb-tile")
+    parts = []
+    for i in range(tiles.count()):
+        text = " ".join(tiles.nth(i).inner_text().split())
+        parts.append(text)
+    return " | ".join(parts)
 
 
 def phase(page):
@@ -172,6 +182,7 @@ def shoot(browser, url, base_url, key, out, name, theme, viewport, scale, mobile
     page.screenshot(path=str(path))
     print(f"{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}: score {score(page)}, "
           f"{'mid-flight' if ok else 'not mid-flight (the model kept crashing)'}")
+    print(f"  {hud(page)}")
     context.close()
     return errors
 
@@ -212,6 +223,7 @@ def record_gif(browser, url, base_url, key, out, args):
     cdp.send("Page.startScreencast", {"format": "png", "everyNthFrame": 1})
     page.wait_for_timeout(int(args.seconds * 1000))
     cdp.send("Page.stopScreencast")
+    print(f"  after the GIF: {hud(page)}")
     page.wait_for_timeout(200)
     context.close()
     if len(frames) < 10:
@@ -272,8 +284,8 @@ def main():
     parser.add_argument("--score", type=int, default=2, help="score to reach before a screenshot (default 2)")
     parser.add_argument("--timeout", type=float, default=60.0, help="seconds to wait for each step (default 60)")
     parser.add_argument("--latency", default="40-60", help="the mock's latency in ms, LOW-HIGH (default 40-60)")
-    parser.add_argument("--form", default="low", choices=("low", "where", "danger", "noul", "choice"),
-                        help="the question the page asks (default low: is the hummingbird too low?)")
+    parser.add_argument("--form", default="where", choices=("low", "where", "danger", "noul", "choice"),
+                        help="the question the page asks (default where: where is the hummingbird compared with the opening?)")
     parser.add_argument("--style", default="words", choices=("words", "numbers"), help="how the page describes the screen")
     args = parser.parse_args()
 

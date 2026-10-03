@@ -3,8 +3,9 @@
  * Every step the game can be described in a few sentences: where the
  * hummingbird is against the next opening, how it moves, what is close. The
  * pilot sends that description to POST /v1/systemone with one typed question,
- * reads the probability of the answer that means flap (by default yes, to "Is
- * the hummingbird too low?"), and flaps when it is above the threshold.
+ * reads the probability of the answer that means flap (by default "below", to
+ * "Where is the hummingbird compared with the opening?"), and flaps when it is
+ * above the threshold.
  *
  * REAL TIME, HONESTLY. One request at a time, and the game does not wait for
  * it: while the model reads, the pipes keep coming. The answer is about the
@@ -139,20 +140,21 @@ export function driftBelow(o: Observation, steps: number): number {
 
    The heights are where the hummingbird will be `ahead` steps from now, not
    where it is: an answer lands a couple of steps after the screen it was
-   about ("Match the model's pace" aims at 2), and a hummingbird falling fast
-   in the middle of the opening is, by then, near its bottom edge. Read the
-   plain way (flap when the words put it lower than the middle), these words
-   fly every round to the end when answers land 1, 2 or 3 steps late; words
-   for where it is now lose nearly every round at 3 (oracle.test.ts). Its
-   motion is described as it is. */
+   about ("Match the model's pace" aims at 2) and a flap acts on the step
+   after, and a hummingbird falling fast in the middle of the opening is, by
+   then, low in it. Read the plain way (flap when the words put it lower than
+   the middle), these words fly every round to the end when answers land 1, 2
+   or 3 steps late; words for where it is now lose nearly every round at 3
+   (oracle.test.ts). Its motion is described as it is. */
 export const WORDS = {
-  /* Steps ahead the heights are measured. */
-  ahead: 2,
+  /* Steps ahead the heights are measured: the answer's 2 steps, then the flap's. */
+  ahead: 3,
   /* Inside the opening: the whole body fits, a radius away from either edge. */
   inside: PIPES.gap / 2 - BIRD.radius,
-  /* The middle band of the opening, a tenth of its height either side of the
-     middle; between it and an edge, near that edge. */
-  middle: PIPES.gap / 10,
+  /* The middle band of the opening, a third of a flap's rise either side of
+     the middle; between it and an edge, low or high in the opening. A flap
+     from the top of the lower part lifts it a flap's rise, still inside. */
+  middle: FLAP_RISE / 3,
   /* Past this, one flap is no longer enough to get back level with the opening. */
   well: PIPES.gap / 2 - BIRD.radius + FLAP_RISE,
   /* Faster than half a flap's speed, up or down, is fast. */
@@ -220,9 +222,9 @@ export function situation(o: Observation, w: WordThresholds = WORDS): Situation 
 const POSITION_WORDS: Record<Position, string> = {
   wellBelow: "well below the opening",
   littleBelow: "a little below the opening",
-  insideLow: "inside the opening, near its bottom edge",
+  insideLow: "low in the opening, near its bottom edge",
   middle: "right in the middle of the opening",
-  insideHigh: "inside the opening, near its top edge",
+  insideHigh: "high in the opening, near its top edge",
   littleAbove: "a little above the opening",
   wellAbove: "well above the opening",
 }
@@ -259,16 +261,16 @@ export function describeState(o: Observation, style: Style = "words"): string {
    flap can still tell where the hummingbird is. The last two ask for the move
    itself.
 
-     low     noul    "Is the hummingbird too low?"           yes means flap (the default)
-     where   choice  below / above / inside                  below means flap
+     where   choice  below / above / inside                  below means flap (the default)
+     low     noul    "Is the hummingbird too low?"           yes means flap
      danger  choice  ground / ceiling / none                 ground means flap
      noul    noul    "Should the hummingbird flap its wings now?"
      choice  choice  flap / glide
 
    `noul` and `choice` keep their old names so saved settings still load. */
 export type Form = "low" | "where" | "danger" | "noul" | "choice"
-export const FORMS: readonly Form[] = ["low", "where", "danger", "noul", "choice"]
-export const DEFAULT_FORM: Form = "low"
+export const FORMS: readonly Form[] = ["where", "low", "danger", "noul", "choice"]
+export const DEFAULT_FORM: Form = "where"
 
 export const QUESTION_ID: Record<Form, string> = {
   low: "low", where: "where", danger: "danger", noul: "flap", choice: "move",
@@ -291,10 +293,13 @@ const QUESTIONS: Record<Form, SystemOneQuestion> = {
   where: {
     type: "choice",
     instructions: "Where is the hummingbird compared with the opening?",
+    /* "below" covers the low part of the opening too: that is where a flap
+       is due, and with only "lower than the opening" both native decision
+       models answered "inside" there. */
     criteria: {
-      below: "lower than the opening, or near the ground",
-      above: "higher than the opening, or near the ceiling",
-      inside: "level with the opening",
+      below: "low: near the bottom edge of the opening or lower, or near the ground",
+      above: "high: near the top edge of the opening or higher, or near the ceiling",
+      inside: "right in the middle of the opening",
     },
   },
   danger: {

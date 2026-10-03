@@ -15,9 +15,15 @@ afterEach(() => vi.unstubAllGlobals())
    `answers` keyed by question id, `usage` with input/output tokens. The extra
    fields a newer gateway adds (`id`, `provider`, `usage.cost`) are included on
    purpose: the client must read through them. */
-const noulReply = (p: number, id = QUESTION_ID[DEFAULT_FORM]): SystemOneResponse & Record<string, unknown> => ({
+/* The default question's reply: where is the hummingbird? p is p(below). */
+const whereReply = (p: number): SystemOneResponse & Record<string, unknown> => ({
   id: "so_123", provider: "colibri", model: "qwen36",
-  answers: { [id]: { type: "noul", noul: p } },
+  answers: {
+    where: {
+      type: "choice", choice: p > 0.5 ? "below" : "inside",
+      probabilities: { below: p, above: (1 - p) / 4, inside: (3 * (1 - p)) / 4 }, confidence: 0.5,
+    },
+  },
   usage: { input_tokens: 182, output_tokens: 2, cost: 0 } as SystemOneResponse["usage"],
 })
 const choiceReply = (p: number): SystemOneResponse => ({
@@ -132,9 +138,9 @@ describe("the state in words", () => {
     expect(FLAP_RISE).toBe(60)
     expect(FLAP_FRAMES).toBe(18)
     expect(WORDS).toEqual({
-      ahead: 2,
+      ahead: 3,
       inside: PIPES.gap / 2 - BIRD.radius,                  // 63
-      middle: PIPES.gap / 10,                               // 15
+      middle: FLAP_RISE / 3,                                // 20
       well: PIPES.gap / 2 - BIRD.radius + FLAP_RISE,        // 123
       fast: PHYSICS.flap / 2,                               // 3.3
       level: PHYSICS.gravity * 3,                           // 1.08
@@ -201,23 +207,27 @@ describe("the state in words", () => {
     expect(describeWords(obs({ gapMiddle: 90, speed: -5, ahead: 30, ground: -(40 + BIRD.radius) }), NOW)).toBe(
       `${WORDS_RULES}\nThe hummingbird is falling fast and is a little below the opening. ` +
       "The ground is close. The next pipes are very close.")
+    expect(describeWords(obs({ gapMiddle: 40, speed: 2 }), NOW)).toBe(
+      `${WORDS_RULES}\nThe hummingbird is rising and is low in the opening, near its bottom edge. ` +
+      "The next pipes are still far.")
     expect(describeWords(obs({ gapMiddle: 0, inGap: true, ahead: 0 }), NOW)).toBe(
       `${WORDS_RULES}\nThe hummingbird is gliding level and is right in the middle of the opening. ` +
       "It is passing between the pipes now.")
   })
 
   it("describes the heights where the hummingbird will be when the answer lands", () => {
-    /* falling fast in the middle: two steps later it is near the bottom edge */
-    const o = obs({ gapMiddle: 5, speed: -7 })
-    expect(driftBelow(o, 2)).toBeCloseTo(5 + (7 + 0.36) + (7 + 0.72))
+    /* falling fast in the middle: three steps later it is low in the opening */
+    const o = obs({ gapMiddle: 0, speed: -7 })
+    expect(driftBelow(o, 2)).toBeCloseTo((7 + 0.36) + (7 + 0.72))
+    expect(driftBelow(o, 3)).toBeCloseTo((7 + 0.36) + (7 + 0.72) + (7 + 1.08))
     expect(situation(o, NOW).position).toBe("middle")
     expect(situation(o).position).toBe("insideLow")
     expect(situation(o).motion).toBe("fallingFast")
     /* the fall stops at the terminal speed */
     expect(driftBelow(obs({ speed: -PHYSICS.terminal }), 3)).toBeCloseTo(3 * PHYSICS.terminal)
     /* the ground and the ceiling move with it */
-    expect(situation(obs({ gapMiddle: 200, speed: -8, ground: -(45 + BIRD.radius) })).ground).toBe("hit")
-    expect(situation(obs({ gapMiddle: 200, speed: -8, ground: -(45 + BIRD.radius) }), NOW).ground).toBe("close")
+    expect(situation(obs({ gapMiddle: 200, speed: -8, ground: -(50 + BIRD.radius) })).ground).toBe("hit")
+    expect(situation(obs({ gapMiddle: 200, speed: -8, ground: -(50 + BIRD.radius) }), NOW).ground).toBe("close")
   })
 })
 
@@ -228,27 +238,27 @@ const replyFor = (form: Form, answer: SystemOneResponse["answers"][string]): Sys
   ({ model: "m", answers: { [QUESTION_ID[form]]: answer } })
 
 describe("the question", () => {
-  it("asks about the situation by default: is the hummingbird too low?", () => {
-    expect(DEFAULT_FORM).toBe("low")
-    expect(FORMS).toEqual(["low", "where", "danger", "noul", "choice"])
+  it("asks about the situation by default: where is the hummingbird compared with the opening?", () => {
+    expect(DEFAULT_FORM).toBe("where")
+    expect(FORMS).toEqual(["where", "low", "danger", "noul", "choice"])
     expect(buildQuestions("low")).toEqual({ low: { type: "noul", instructions: "Is the hummingbird too low?" } })
     const request = buildRequest(playing(), DEFAULT_FORM, "qwen36")
     expect(request.model).toBe("qwen36")
     expect(request.state.startsWith(WORDS_RULES)).toBe(true)
-    expect(Object.keys(request.questions)).toEqual(["low"])
+    expect(Object.keys(request.questions)).toEqual(["where"])
     expect(buildRequest(playing(), "noul", "m", "numbers").state.startsWith(RULES)).toBe(true)
   })
 
   it("has three situation questions and two move questions, each with the answer that means flap", () => {
-    expect(FORMS.filter(asksSituation)).toEqual(["low", "where", "danger"])
+    expect(FORMS.filter(asksSituation)).toEqual(["where", "low", "danger"])
     expect(FLAP_ANSWER).toEqual({ low: "yes", where: "below", danger: "ground", noul: "yes", choice: "flap" })
     expect(buildQuestions("where")).toEqual({
       where: {
         type: "choice", instructions: "Where is the hummingbird compared with the opening?",
         criteria: {
-          below: "lower than the opening, or near the ground",
-          above: "higher than the opening, or near the ceiling",
-          inside: "level with the opening",
+          below: "low: near the bottom edge of the opening or lower, or near the ground",
+          above: "high: near the top edge of the opening or higher, or near the ceiling",
+          inside: "right in the middle of the opening",
         },
       },
     })
@@ -303,7 +313,7 @@ describe("the question", () => {
 
 describe("the pilot", () => {
   it("posts the request to /v1/systemone with the key, and flaps above the threshold", async () => {
-    const fetchMock = vi.fn(async () => json(noulReply(0.62), { headers: { "x-colibri-elapsed-ms": "37" } }))
+    const fetchMock = vi.fn(async () => json(whereReply(0.62), { headers: { "x-colibri-elapsed-ms": "37" } }))
     vi.stubGlobal("fetch", fetchMock)
     const world = playing()
     const pilot = new Pilot({ baseUrl: "http://127.0.0.1:8000/v1/", apiKey: "secret", model: "qwen36" })
@@ -313,9 +323,9 @@ describe("the pilot", () => {
     expect(init.method).toBe("POST")
     expect(init.headers).toMatchObject({ Authorization: "Bearer secret", "Content-Type": "application/json" })
     const body = JSON.parse(String(init.body))
-    expect(body).toEqual({ model: "qwen36", state: describeWords(observe(world)), questions: buildQuestions("low") })
+    expect(body).toEqual({ model: "qwen36", state: describeWords(observe(world)), questions: buildQuestions("where") })
     const decision = pilot.take(world)!
-    expect(decision).toMatchObject({ flap: true, p: 0.62, said: "yes", form: "low", threshold: 0.5, engineMs: 37, model: "qwen36" })
+    expect(decision).toMatchObject({ flap: true, p: 0.62, said: "below", form: "where", threshold: 0.5, engineMs: 37, model: "qwen36" })
 
     /* the same answer under a higher threshold is a glide */
     pilot.threshold = 0.7
@@ -363,7 +373,7 @@ describe("the pilot", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(world.tick).toBe(8)
 
-    calls[0].release(json(noulReply(0.1)))
+    calls[0].release(json(whereReply(0.1)))
     await pending
     expect(pilot.busy).toBe(false)
     /* an answer waiting to be applied also holds the next question back */
@@ -374,7 +384,7 @@ describe("the pilot", () => {
   })
 
   it("does not ask twice about the same step", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => json(noulReply(0.3))))
+    vi.stubGlobal("fetch", vi.fn(async () => json(whereReply(0.3))))
     const world = playing()
     const pilot = new Pilot({ baseUrl: "http://x/v1", apiKey: "", model: "m" })
     await pilot.poll(world)
@@ -401,7 +411,7 @@ describe("the pilot", () => {
     for (let i = 0; i < 5; i++) step(world, pilot.take(world)?.flap ?? false)
     expect(world.flaps).toBe(0)
     time.advance(83)
-    calls[0].release(json(noulReply(0.9)))
+    calls[0].release(json(whereReply(0.9)))
     await asked
     /* known on arrival, before any step applies it: pacing can react at once */
     expect(answered).toEqual([83])
@@ -429,7 +439,7 @@ describe("the pilot", () => {
     const asked = pilot.poll(world)!
     pilot.stop()
     expect(pilot.busy).toBe(false)
-    calls[0].release(json(noulReply(0.99)))
+    calls[0].release(json(whereReply(0.99)))
     await asked
     expect(pilot.take(world)).toBeNull()
     expect(pilot.failure).toBeNull()
@@ -437,7 +447,7 @@ describe("the pilot", () => {
 
   it("measures latency and the decision rate", async () => {
     const time = clock()
-    vi.stubGlobal("fetch", vi.fn(async () => { time.advance(40); return json(noulReply(0.4)) }))
+    vi.stubGlobal("fetch", vi.fn(async () => { time.advance(40); return json(whereReply(0.4)) }))
     const world = playing()
     const pilot = new Pilot({ baseUrl: "http://x/v1", apiKey: "", model: "m", now: time.now })
     for (let i = 0; i < 5; i++) {

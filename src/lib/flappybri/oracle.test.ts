@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { PIPES } from "./game"
-import { ORACLE, oracleFlap, playRound } from "./oracle"
+import { ORACLE, oracleFlap, playRound, sampleScreens } from "./oracle"
 import { WORDS, situation, type Observation, type WordThresholds } from "./pilot"
 
 const SEEDS = Array.from({ length: 12 }, (_, i) => 101 + i * 37)
@@ -45,6 +45,19 @@ describe("the oracle", () => {
     for (const s of round.samples) expect(s.oracle).toBe(oracleFlap(s.observation))
     /* the same seed and options give the same round */
     expect(playRound(7, { late: 2, maxSteps: 300, noise: 0.2 })).toEqual(playRound(7, { late: 2, maxSteps: 300, noise: 0.2 }))
+  })
+})
+
+describe("the screens the agreement is measured on", () => {
+  it("are balanced between flap and glide, spaced out, and the same for the same seed", () => {
+    const screens = sampleScreens(200, 1)
+    expect(screens).toHaveLength(200)
+    expect(screens.filter((s) => s.oracle)).toHaveLength(100)
+    expect(sampleScreens(200, 1)).toEqual(screens)
+    /* kept screens of one round are 15 steps apart */
+    const first = screens.filter((s) => s.seed === screens[0].seed && s.oracle === screens[0].oracle)
+    for (let i = 1; i < first.length; i++) expect((first[i].tick - first[i - 1].tick) % 15).toBe(0)
+    expect(new Set(screens.map((s) => s.seed)).size).toBeGreaterThan(10)
   })
 })
 

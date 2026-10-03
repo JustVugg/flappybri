@@ -79,3 +79,24 @@ export function playRound(seed: number, options: PlayOptions = {}): Round {
   }
   return { seed, score: world.score, steps: world.tick, decisions, samples }
 }
+
+/* Rounds on seeds seed, seed+1, ...: flown by the oracle as it is, and with
+   one decision in ten, five and three flipped, so the screens also include
+   the ones a model that errs ends up in. Every fifth question is kept, so two
+   kept screens are 15 steps apart and not near copies of each other. The set
+   is balanced: as many screens where the oracle flaps as where it glides, or
+   an answer that always glides would look right most of the time. */
+export function sampleScreens(count: number, seed: number): Sample[] {
+  const half = Math.ceil(count / 2)
+  const flaps: Sample[] = []
+  const glides: Sample[] = []
+  const noises = [0, 0.1, 0.2, 0.3]
+  for (let round = 0; flaps.length < half || glides.length < half; round++) {
+    const { samples } = playRound(seed + round, { noise: noises[round % noises.length], maxSteps: 1500 })
+    for (let i = round % 5; i < samples.length; i += 5) {
+      const bucket = samples[i].oracle ? flaps : glides
+      if (bucket.length < half) bucket.push(samples[i])
+    }
+  }
+  return [...flaps, ...glides]
+}

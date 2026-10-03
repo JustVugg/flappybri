@@ -28,7 +28,7 @@ import {
   FORMS, buildQuestions, describeState, observe, readAnswer, shouldFlap,
   type Form, type Observation, type Style,
 } from "../src/lib/flappybri/pilot"
-import { oracleFlap, playRound, type Sample } from "../src/lib/flappybri/oracle"
+import { oracleFlap, sampleScreens } from "../src/lib/flappybri/oracle"
 import type { SystemOneQuestion, SystemOneResponse } from "../src/lib/api"
 
 interface Args {
@@ -84,29 +84,6 @@ function parseArgs(argv: string[]): Args {
   }
   if (!args.servers.length) throw new Error("give at least one --server NAME=URL")
   return args
-}
-
-/* ---- the screens ---------------------------------------------------------------- */
-
-/* Rounds on seeds seed, seed+1, ...: flown by the oracle as it is, and with
-   one decision in ten, five and three flipped, so the screens also include
-   the ones a model that errs ends up in. Every fifth question is kept, so two
-   kept screens are 15 steps apart and not near copies of each other. The set
-   is balanced: as many screens where the oracle flaps as where it glides, or
-   an answer that always glides would look right most of the time. */
-export function sampleScreens(count: number, seed: number): Sample[] {
-  const half = Math.ceil(count / 2)
-  const flaps: Sample[] = []
-  const glides: Sample[] = []
-  const noises = [0, 0.1, 0.2, 0.3]
-  for (let round = 0; flaps.length < half || glides.length < half; round++) {
-    const { samples } = playRound(seed + round, { noise: noises[round % noises.length], maxSteps: 1500 })
-    for (let i = round % 5; i < samples.length; i += 5) {
-      const bucket = samples[i].oracle ? flaps : glides
-      if (bucket.length < half) bucket.push(samples[i])
-    }
-  }
-  return [...flaps, ...glides]
 }
 
 /* ---- asking, with a cache ----------------------------------------------------- */

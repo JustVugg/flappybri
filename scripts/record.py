@@ -209,11 +209,16 @@ def record_gif(browser, url, base_url, key, out, args):
     crop = (int(box["x"]) - 12, int(box["y"]) - 12,
             int(min(view["width"], box["x"] + box["width"] + 12)), int(min(view["height"], bottom)))
 
+    # Keep at most --fps frames a second, each lasting until the next one,
+    # chosen as they arrive: a long time-lapse would not fit in memory whole.
     frames = []
+    step = 1.0 / args.fps
     cdp = context.new_cdp_session(page)
 
     def on_frame(params):
-        frames.append((params["metadata"].get("timestamp", time.time()), params["data"]))
+        stamp = params["metadata"].get("timestamp", time.time())
+        if not frames or stamp - frames[-1][0] >= step * 0.999:
+            frames.append((stamp, params["data"]))
         try:
             cdp.send("Page.screencastFrameAck", {"sessionId": params["sessionId"]})
         except Exception:
@@ -229,20 +234,14 @@ def record_gif(browser, url, base_url, key, out, args):
     if len(frames) < 10:
         raise SystemExit(f"only {len(frames)} frames captured")
 
-    # Keep at most --fps frames a second, each lasting until the next one.
-    step = 1.0 / args.fps
-    picked, last = [], None
-    for stamp, data in frames:
-        if last is None or stamp - last >= step * 0.999:
-            picked.append((stamp, data))
-            last = stamp
+    picked = frames
     width = args.gif_width
     images = []
     for stamp, data in picked:
         image = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB").crop(crop)
         height = round(image.height * width / image.width)
         images.append(image.resize((width, height), Image.LANCZOS))
-    durations = [max(20, round((picked[i + 1][0] - picked[i][0]) * 1000)) for i in range(len(picked) - 1)]
+    durations = [max(20, round((picked[i + 1][0] - picked[i][0]) * 1000 / args.speedup)) for i in range(len(picked) - 1)]
     durations.append(durations[-1] if durations else 80)
 
     # One palette for every frame, from a sample of them, so colors do not
@@ -263,8 +262,9 @@ def record_gif(browser, url, base_url, key, out, args):
                       optimize=True, disposal=1)
     seconds = sum(durations) / 1000
     size = path.stat().st_size
+    lapse = f" (a {args.speedup:g}x time-lapse of {seconds * args.speedup:.0f} s)" if args.speedup != 1 else ""
     print(f"{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}: {len(quantized)} frames, "
-          f"{seconds:.1f} s, {width}x{quantized[0].height}, {size / 1e6:.2f} MB")
+          f"{seconds:.1f} s{lapse}, {width}x{quantized[0].height}, {size / 1e6:.2f} MB")
     return size
 
 
@@ -279,6 +279,8 @@ def main():
     parser.add_argument("--only", choices=("shots", "gif"), help="make only the screenshots or only the GIF")
     parser.add_argument("--seconds", type=float, default=10.0, help="length of the GIF (default 10)")
     parser.add_argument("--fps", type=float, default=15.0, help="GIF frames per second at most (default 15)")
+    parser.add_argument("--speedup", type=float, default=1.0,
+                        help="play the GIF this many times faster than it was recorded, for a slow model (default 1)")
     parser.add_argument("--gif-width", type=int, default=760)
     parser.add_argument("--colors", type=int, default=96)
     parser.add_argument("--score", type=int, default=2, help="score to reach before a screenshot (default 2)")

@@ -11,7 +11,7 @@ import {
 } from "./lib/flappybri/pilot"
 import { draw, makeSprite, readPalette, type Palette, type TrailPoint } from "./lib/flappybri/render"
 import type { LatencySummary } from "./lib/flappybri/stats"
-import { SPEEDS, loadSettings, saveSettings, type Mode, type Settings } from "./lib/settings"
+import { SPEEDS, formatSpeed, loadSettings, matchSpeed, saveSettings, type Mode, type Settings } from "./lib/settings"
 import { useLocale } from "./i18n"
 import "./flappybri.css"
 
@@ -46,8 +46,6 @@ const FORM_KEY: Record<Form, string> = {
 const randomSeed = () => {
   try { return crypto.getRandomValues(new Uint32Array(1))[0] } catch { return Math.floor(Math.random() * 2 ** 32) }
 }
-
-const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value))
 
 interface Hud {
   phase: Phase
@@ -91,7 +89,12 @@ interface Engine {
 }
 
 const fmtMs = (ms: number) => (ms < 10 ? ms.toFixed(1) : String(Math.round(ms)))
-const fmtSpeed = (speed: number) => (speed >= 0.1 ? speed.toFixed(2).replace(/0$/, "") : speed.toFixed(2))
+const fmtSpeed = formatSpeed
+/* Steps per second as the panel shows them: one decimal when slow. */
+const fmtSteps = (steps: number) => (steps < 10 ? steps.toFixed(1) : String(Math.round(steps)))
+/* The speed actually run is averaged over this much wall time: at the
+   slowest match speed a step comes every several seconds. */
+const CLOCK_MS = 10000
 
 export default function FlappyBri({ baseUrl, apiKey, model, connected, connection }: {
   baseUrl: string; apiKey: string; model: string; connected: boolean
@@ -123,12 +126,12 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
 
   const snapshot = (e: Engine): Hud => {
     const now = performance.now()
-    const recent = e.clock.filter(([at]) => now - at <= 1000)
+    const recent = e.clock.filter(([at]) => now - at <= CLOCK_MS)
     let effective: number | null = null
     if (e.world.phase === "playing" && recent.length > 1) {
       const [t0, s0] = recent[0]
       const [t1, s1] = recent[recent.length - 1]
-      if (t1 - t0 > 250) effective = ((s1 - s0) * 1000) / (t1 - t0) / STEPS_PER_SECOND
+      if (t1 - t0 > 250 && s1 > s0) effective = ((s1 - s0) * 1000) / (t1 - t0) / STEPS_PER_SECOND
     }
     const pilot = e.pilot
     return {
@@ -202,7 +205,7 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
   const onAnswer = (decision: Decision) => {
     const e = engine.current
     e.ema = e.ema === null ? decision.latencyMs : e.ema * 0.75 + decision.latencyMs * 0.25
-    e.matchSpeed = clamp((STEPS_PER_DECISION * 1000) / (e.ema * STEPS_PER_SECOND), SPEEDS[0], 1)
+    e.matchSpeed = matchSpeed(e.ema, STEPS_PER_DECISION)
     e.dirty = true
   }
 
@@ -418,7 +421,7 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
           }
         }
         e.clock.push([now, e.steps])
-        while (e.clock.length && now - e.clock[0][0] > 1200) e.clock.shift()
+        while (e.clock.length && now - e.clock[0][0] > CLOCK_MS + 200) e.clock.shift()
         if (e.mode === "model" && world.phase === "playing") e.pilot?.poll(world)
       }
 
@@ -671,7 +674,7 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
                    onChange={(event) => patch({ speed: Number(event.target.value) })} />
             <span className="fb-help">
               {hud.effective !== null
-                ? t("flappy.effective", { x: fmtSpeed(hud.effective), steps: Math.round(hud.effective * STEPS_PER_SECOND) })
+                ? t("flappy.effective", { x: fmtSpeed(hud.effective), steps: fmtSteps(hud.effective * STEPS_PER_SECOND) })
                 : t("flappy.speedHelp")}
             </span>
           </label>

@@ -7,6 +7,7 @@
  * everyone who opened it, chosen or not, so it moves to the new default
  * question. Everything else carries over as it was. */
 
+import { STEPS_PER_SECOND } from "./flappybri/game"
 import { DEFAULT_FORM, FORMS, STYLES, type Form, type Style } from "./flappybri/pilot"
 
 export type Mode = "human" | "model"
@@ -14,6 +15,23 @@ export type Mode = "human" | "model"
 /* Game speed stops, from a hundredth of real time to real time. A model that
    needs a second per answer still plays at 0.01x: the pipes wait for it. */
 export const SPEEDS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1] as const
+
+/* "Match the model's pace" goes slower than the slider: on a busy CPU a model
+   can need several seconds per answer, and at 0.01x five seconds are already
+   three steps, more than the words are made for. Down to a thousandth of real
+   time, a model that answers in 16 s still gets about two steps per decision. */
+export const MATCH_MIN = 0.001
+
+/* The speed at which about `steps` steps pass while the model decides. */
+export function matchSpeed(latencyMs: number, steps: number): number {
+  return Math.min(1, Math.max(MATCH_MIN, (steps * 1000) / (latencyMs * STEPS_PER_SECOND)))
+}
+
+/* A speed as the panel shows it: two decimals, three below a hundredth. */
+export function formatSpeed(speed: number): string {
+  if (speed >= 0.1) return speed.toFixed(2).replace(/0$/, "")
+  return speed >= 0.01 ? speed.toFixed(2) : speed.toFixed(3)
+}
 
 export const SETTINGS_KEY = "flappybri.settings"
 export const SETTINGS_VERSION = 2

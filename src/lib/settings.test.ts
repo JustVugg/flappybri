@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 
-import { DEFAULTS, SETTINGS_KEY, SETTINGS_VERSION, SPEEDS, loadSettings, parseSettings, saveSettings } from "./settings"
+import {
+  DEFAULTS, MATCH_MIN, SETTINGS_KEY, SETTINGS_VERSION, SPEEDS, formatSpeed, loadSettings, matchSpeed, parseSettings, saveSettings,
+} from "./settings"
 
 const memory = (initial: Record<string, string> = {}) => {
   const items = new Map(Object.entries(initial))
@@ -60,5 +62,21 @@ describe("settings", () => {
     saveSettings(storage, { ...settings, form: "noul" })
     expect(loadSettings(storage).form).toBe("noul")
     expect(() => saveSettings({ setItem: () => { throw new Error("full") } }, settings)).not.toThrow()
+  })
+})
+
+describe("matching the model's pace", () => {
+  it("gives about two steps per decision, from real time down to a thousandth of it", () => {
+    expect(matchSpeed(20, 2)).toBe(1)                       // fast: real time, never faster
+    expect(matchSpeed(500, 2)).toBeCloseTo(2 / 30)           // two steps in half a second
+    expect(matchSpeed(5000, 2)).toBeCloseTo(2 / 300)         // below the slider's 0.01x
+    expect(matchSpeed(5000, 2) * 60 * 5).toBeCloseTo(2)
+    expect(matchSpeed(60_000, 2)).toBe(MATCH_MIN)
+    expect(MATCH_MIN).toBeLessThan(SPEEDS[0])
+  })
+
+  it("shows speeds with the decimals they need", () => {
+    expect([formatSpeed(1), formatSpeed(0.75), formatSpeed(0.5), formatSpeed(0.05), formatSpeed(0.0067), formatSpeed(0.001)])
+      .toEqual(["1.0", "0.75", "0.5", "0.05", "0.007", "0.001"])
   })
 })

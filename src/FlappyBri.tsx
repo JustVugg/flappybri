@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Bird, Cpu, LoaderCircle, Pause, Play, RotateCcw, X } from "lucide-react"
 
 import {
   STEPS_PER_SECOND, WORLD, accumulate, createWorld, nextBest, readBest, step, writeBest,
   type Phase, type World,
 } from "./lib/flappybri/game"
-import { Pilot, QUESTION_ID, buildQuestions, findModel, type Decision, type Form, type PilotFailure } from "./lib/flappybri/pilot"
+import {
+  FLAP_ANSWER, FORMS, Pilot, QUESTION_ID, STYLES, asksSituation, buildQuestions, findModel,
+  type Decision, type Form, type PilotFailure,
+} from "./lib/flappybri/pilot"
 import { draw, makeSprite, readPalette, type Palette, type TrailPoint } from "./lib/flappybri/render"
 import type { LatencySummary } from "./lib/flappybri/stats"
+import { SPEEDS, loadSettings, saveSettings, type Mode, type Settings } from "./lib/settings"
 import { useLocale } from "./i18n"
 import "./flappybri.css"
 
@@ -20,11 +24,6 @@ import "./flappybri.css"
  * connection panel (App.tsx), which the page passes in to sit above the
  * controls. */
 
-type Mode = "human" | "model"
-
-/* Game speed stops, from a hundredth of real time to real time. A model that
-   needs a second per answer still plays at 0.01x: the pipes wait for it. */
-export const SPEEDS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1] as const
 /* Matching the model's pace: the speed at which about this many steps pass
    while the model decides. Two keeps a plain rule alive; more and it falls. */
 const STEPS_PER_DECISION = 2
@@ -32,38 +31,16 @@ const TRAIL = 120
 const SPARK = 100
 const RESTART_MS = 1600
 
-const SETTINGS_KEY = "flappybri.settings"
 const bestKey = (mode: Mode) => `flappybri.best.${mode}`
-
-interface Settings {
-  mode: Mode
-  form: Form
-  threshold: number
-  speed: number         // index into SPEEDS
-  match: boolean        // follow the model's pace instead of the slider
-  autoRestart: boolean
-}
-
-const DEFAULTS: Settings = { mode: "human", form: "noul", threshold: 0.5, speed: SPEEDS.length - 1, match: true, autoRestart: true }
-
-function loadSettings(): Settings {
-  try {
-    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") as Partial<Settings>
-    return {
-      mode: raw.mode === "model" ? "model" : "human",
-      form: raw.form === "choice" ? "choice" : "noul",
-      threshold: typeof raw.threshold === "number" && raw.threshold > 0 && raw.threshold < 1 ? raw.threshold : DEFAULTS.threshold,
-      speed: Number.isInteger(raw.speed) && raw.speed! >= 0 && raw.speed! < SPEEDS.length ? raw.speed! : DEFAULTS.speed,
-      match: typeof raw.match === "boolean" ? raw.match : DEFAULTS.match,
-      autoRestart: typeof raw.autoRestart === "boolean" ? raw.autoRestart : DEFAULTS.autoRestart,
-    }
-  } catch {
-    return DEFAULTS
-  }
-}
 
 const storage = () => {
   try { return window.localStorage } catch { return undefined }
+}
+
+/* What each question asks, for the picker: the situation forms first. */
+const FORM_KEY: Record<Form, string> = {
+  where: "flappy.formWhere", low: "flappy.formLow", danger: "flappy.formDanger",
+  noul: "flappy.formNoul", choice: "flappy.formChoice",
 }
 
 const randomSeed = () => {
@@ -122,7 +99,7 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
   connection?: ReactNode
 }) {
   const { t } = useLocale()
-  const [settings, setSettings] = useState<Settings>(loadSettings)
+  const [settings, setSettings] = useState<Settings>(() => loadSettings(storage()))
   const [preparing, setPreparing] = useState(false)
   const [modelName, setModelName] = useState<string | null>(null)
   const [failure, setFailure] = useState<PilotFailure | null>(null)
@@ -174,8 +151,8 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
   useEffect(() => {
     const e = engine.current
     e.settings = settings
-    if (e.pilot) { e.pilot.form = settings.form; e.pilot.threshold = settings.threshold }
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)) } catch { /* restricted storage */ }
+    if (e.pilot) { e.pilot.form = settings.form; e.pilot.style = settings.style; e.pilot.threshold = settings.threshold }
+    saveSettings(storage(), settings)
     e.dirty = true
   }, [settings])
   const patch = (change: Partial<Settings>) => setSettings((current) => ({ ...current, ...change }))
@@ -253,7 +230,8 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
     if (!e.pilot || e.pilot.model !== found.model || e.pilot.baseUrl !== baseUrl || e.pilot.apiKey !== apiKey) {
       e.pilot?.stop()
       e.pilot = new Pilot({
-        baseUrl, apiKey, model: found.model, form: e.settings.form, threshold: e.settings.threshold, window: SPARK,
+        baseUrl, apiKey, model: found.model, form: e.settings.form, style: e.settings.style,
+        threshold: e.settings.threshold, window: SPARK,
         onAnswer, onApply, onFailure: (why) => fallBackRef.current(why),
       })
       e.ema = null
@@ -603,14 +581,19 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
                 <strong data-flap={decision ? String(decision.flap) : undefined}>
                   {decision ? t(decision.flap ? "flappy.flap" : "flappy.glide") : "-"}
                 </strong>
-                <span>{decision ? t("flappy.pFlap", { p: decision.p.toFixed(3) }) : t("flappy.noDecision")}</span>
+                <span>{decision ? t("flappy.pOf", { answer: FLAP_ANSWER[decision.form], p: decision.p.toFixed(3) }) : t("flappy.noDecision")}</span>
               </div>
               <div className="fb-meter" role="img"
-                   aria-label={decision ? t("flappy.meterLabel", { p: decision.p.toFixed(3), threshold: settings.threshold.toFixed(2) }) : t("flappy.noDecision")}>
+                   aria-label={decision ? t("flappy.meterLabel", { answer: FLAP_ANSWER[decision.form], p: decision.p.toFixed(3), threshold: settings.threshold.toFixed(2) }) : t("flappy.noDecision")}>
                 <span className="fb-meter-fill" data-flap={decision ? String(decision.flap) : undefined}
                       style={{ width: `${(decision?.p ?? 0) * 100}%` }} />
                 <span className="fb-meter-mark" style={{ left: `${settings.threshold * 100}%` }} />
               </div>
+              {decision ? (
+                <p className="fb-sub fb-said">
+                  {t(asksSituation(decision.form) ? "flappy.saidSituation" : "flappy.saidMove", { said: decision.said, answer: FLAP_ANSWER[decision.form] })}
+                </p>
+              ) : null}
               {decision ? (
                 <p className="fb-sub">
                   {t(decision.stepsLate === 0 ? "flappy.lateNone" : decision.stepsLate === 1 ? "flappy.lateOne" : "flappy.late", { n: decision.stepsLate })}
@@ -644,13 +627,30 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
           {isModel ? <>
             <div className="fb-field">
               <span className="fb-label" id="fb-form">{t("flappy.question")}</span>
-              <div className="fb-segment" role="radiogroup" aria-labelledby="fb-form">
-                {(["noul", "choice"] as const).map((form) => (
-                  <button key={form} type="button" role="radio" aria-checked={settings.form === form}
-                          onClick={() => patch({ form })}>{t(form === "noul" ? "flappy.formNoul" : "flappy.formChoice")}</button>
+              <div className="fb-choices" role="radiogroup" aria-labelledby="fb-form">
+                {FORMS.map((form, index) => (
+                  <Fragment key={form}>
+                    {index === 0 || asksSituation(form) !== asksSituation(FORMS[index - 1])
+                      ? <span className="fb-group" aria-hidden="true">{t(asksSituation(form) ? "flappy.groupSituation" : "flappy.groupMove")}</span>
+                      : null}
+                    <button type="button" role="radio" aria-checked={settings.form === form} onClick={() => patch({ form })}>
+                      <span>{t(FORM_KEY[form])}</span>
+                      <small>{asksSituation(form) ? t("flappy.means", { answer: FLAP_ANSWER[form] }) : t("flappy.picksMove")}</small>
+                    </button>
+                  </Fragment>
                 ))}
               </div>
-              <p className="fb-help">{t(settings.form === "noul" ? "flappy.formNoulHelp" : "flappy.formChoiceHelp")}</p>
+              <p className="fb-help">{t(`${FORM_KEY[settings.form]}Help`)}</p>
+            </div>
+            <div className="fb-field">
+              <span className="fb-label" id="fb-style">{t("flappy.style")}</span>
+              <div className="fb-segment" role="radiogroup" aria-labelledby="fb-style">
+                {STYLES.map((style) => (
+                  <button key={style} type="button" role="radio" aria-checked={settings.style === style}
+                          onClick={() => patch({ style })}>{t(style === "words" ? "flappy.styleWords" : "flappy.styleNumbers")}</button>
+                ))}
+              </div>
+              <p className="fb-help">{t(settings.style === "words" ? "flappy.styleWordsHelp" : "flappy.styleNumbersHelp")}</p>
             </div>
             <label className="fb-field">
               <span className="fb-line"><span className="fb-label">{t("flappy.threshold")}</span><code>{settings.threshold.toFixed(2)}</code></span>
@@ -690,7 +690,7 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
             {hud.lastState ? <>
               <p className="fb-help">{t("flappy.readsHelp")}</p>
               <pre>{`POST /v1/systemone\n${JSON.stringify({ model: decision?.model || modelName || model, state: hud.lastState, questions: buildQuestions(settings.form) }, null, 2)}`}</pre>
-              <p className="fb-help">{t("flappy.readsAnswer", { field: settings.form === "noul" ? `answers.${QUESTION_ID.noul}.noul` : `answers.${QUESTION_ID.choice}.probabilities.flap` })}</p>
+              <p className="fb-help">{t("flappy.readsAnswer", { field: answerField(settings.form) })}</p>
             </> : <p className="fb-help">{t("flappy.readsEmpty")}</p>}
           </details>
         ) : null}
@@ -699,6 +699,12 @@ export default function FlappyBri({ baseUrl, apiKey, model, connected, connectio
       </aside>
     </div>
   )
+}
+
+/* The field of the reply the game reads: the probability that means flap. */
+function answerField(form: Form) {
+  const id = QUESTION_ID[form]
+  return buildQuestions(form)[id].type === "noul" ? `answers.${id}.noul` : `answers.${id}.probabilities.${FLAP_ANSWER[form]}`
 }
 
 function closestSpeed(speed: number) {

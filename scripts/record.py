@@ -3,7 +3,7 @@
 
     npm run build
     python3 scripts/record.py                                  # the built-in mock
-    python3 scripts/record.py --server http://127.0.0.1:8000/v1 --label "qwen36 on coli serve"
+    python3 scripts/record.py --server http://127.0.0.1:8000/v1 --timeout 300
 
 Writes, in --out (docs/media by default):
 
@@ -105,14 +105,18 @@ def serve_page(dist, upstream):
 
 # ---- driving the page -----------------------------------------------------------------
 
-SETTINGS = {"mode": "model", "form": "noul", "threshold": 0.5, "speed": 8, "match": True, "autoRestart": True}
+# The page's settings (src/lib/settings.ts, version 2): model mode, the
+# question and the style from the command line, "Match the model's pace" on.
+SETTINGS = {"version": 2, "mode": "model", "form": "low", "style": "words", "threshold": 0.5, "speed": 8,
+            "match": True, "autoRestart": True}
 
 
-def prepare(context, base_url, key, theme):
+def prepare(context, base_url, key, theme, args):
     """The page's own storage, set before it loads: the connection, model mode, the theme."""
+    settings = dict(SETTINGS, form=args.form, style=args.style)
     values = {
         "flappybri.connection": json.dumps({"baseUrl": base_url, "apiKey": key}),
-        "flappybri.settings": json.dumps(SETTINGS),
+        "flappybri.settings": json.dumps(settings),
         "flappybri.theme": theme,
         "flappybri.locale": "en",
     }
@@ -157,7 +161,7 @@ def wait_mid_flight(page, at_least, timeout_s):
 def shoot(browser, url, base_url, key, out, name, theme, viewport, scale, mobile, args):
     context = browser.new_context(viewport=viewport, device_scale_factor=scale, is_mobile=mobile, has_touch=mobile,
                                   locale="en-US", color_scheme=theme)
-    prepare(context, base_url, key, theme)
+    prepare(context, base_url, key, theme, args)
     page = context.new_page()
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -178,7 +182,7 @@ def record_gif(browser, url, base_url, key, out, args):
     view = {"width": 920, "height": 900}
     context = browser.new_context(viewport=view, device_scale_factor=1,
                                   locale="en-US", color_scheme="dark")
-    prepare(context, base_url, key, "dark")
+    prepare(context, base_url, key, "dark", args)
     page = context.new_page()
     page.goto(url, wait_until="networkidle")
     # The GIF shows the game and the live part of the HUD; the settings below
@@ -268,6 +272,9 @@ def main():
     parser.add_argument("--score", type=int, default=2, help="score to reach before a screenshot (default 2)")
     parser.add_argument("--timeout", type=float, default=60.0, help="seconds to wait for each step (default 60)")
     parser.add_argument("--latency", default="40-60", help="the mock's latency in ms, LOW-HIGH (default 40-60)")
+    parser.add_argument("--form", default="low", choices=("low", "where", "danger", "noul", "choice"),
+                        help="the question the page asks (default low: is the hummingbird too low?)")
+    parser.add_argument("--style", default="words", choices=("words", "numbers"), help="how the page describes the screen")
     args = parser.parse_args()
 
     from playwright.sync_api import sync_playwright

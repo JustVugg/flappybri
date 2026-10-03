@@ -7,3 +7,4 @@ __pycache__/
 .DS_Store
 # scratch output of scripts/record.py when pointed elsewhere
 /recordings/
+agreement-cache.json

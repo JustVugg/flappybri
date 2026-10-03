@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "mock": "python3 scripts/mock_server.py",
-    "record": "python3 scripts/record.py"
+    "record": "python3 scripts/record.py",
+    "agreement": "rolldown scripts/agreement.ts -p node -f esm -o node_modules/.cache/flappybri/agreement.mjs --logLevel warn && node node_modules/.cache/flappybri/agreement.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.24.0",

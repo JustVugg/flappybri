@@ -5,11 +5,15 @@ It is NOT a model. It answers with a fixed, hand-written rule, so the game can
 be developed, tested and recorded without a colibri server, and nobody should
 read its numbers as a model's. The model id it reports says so: mock-policy.
 
-The rule reads the compact JSON line at the end of `state` (the numbers the
-page sends) and gives the probability of flapping as a logistic of two things:
-how far the hummingbird sits below the middle of the next gap, and how fast it
-is falling. Each answer is held back for a random 40 to 60 ms, so the latency
-the page measures looks like a fast local engine's.
+The rule reads the state the page sends. In words (the default), it looks
+for the phrase that says where the hummingbird will be against the opening;
+in numbers, for the compact JSON line at the end. Either way the probability
+of flapping is a logistic of how far the hummingbird sits below the middle of
+the opening (and, with numbers, of how fast it is falling). That probability
+goes to the answer that means flap: yes for a noul, and the label flap, below
+or ground for a choice; the other labels share the rest. Each answer is held
+back for a random 40 to 60 ms, so the latency the page measures looks like a
+fast local engine's.
 
 The request and the reply have the exact shapes colibri's gateway uses
 (c/openai_server.py, systemone()), including the x-colibri-elapsed-ms and
@@ -31,20 +35,46 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MODEL_ID = "mock-policy"
 
 
-def flap_probability(numbers):
-    """p(flap) from the numbers the page sends. Up is positive: gap_middle > 0
-    means the middle of the gap is above the hummingbird; speed < 0 is falling."""
-    z = 0.06 * (numbers["gap_middle"] - 12) - 0.225 * numbers["speed"]
+# The labels that mean flap, in the page's question forms.
+FLAP_LABELS = ("flap", "below", "ground")
+
+# Where the words put the hummingbird, as px below the middle of the opening.
+# The words already say where it will be when the answer lands, so their rule
+# has no speed term.
+POSITION_WORDS = (
+    ("well below the opening", 150), ("a little below the opening", 90),
+    ("near its bottom edge", 40), ("right in the middle of the opening", 0),
+    ("near its top edge", -40), ("a little above the opening", -90), ("well above the opening", -150),
+)
+
+
+def logistic(z):
     return 1.0 / (1.0 + math.exp(-z))
 
 
+def flap_probability(numbers):
+    """p(flap) from the numbers the page sends. Up is positive: gap_middle > 0
+    means the middle of the gap is above the hummingbird; speed < 0 is falling."""
+    return logistic(0.06 * (numbers["gap_middle"] - 12) - 0.225 * numbers["speed"])
+
+
 def read_numbers(state):
-    """The last line of the state the page builds is compact JSON."""
+    """The last line of the numbers state is compact JSON; None if there is none."""
     for line in reversed(state.strip().splitlines()):
         line = line.strip()
         if line.startswith("{"):
             return json.loads(line)
-    raise ValueError("no JSON line in `state`")
+    return None
+
+
+def state_probability(state):
+    numbers = read_numbers(state)
+    if numbers is not None:
+        return flap_probability(numbers)
+    for phrase, below in POSITION_WORDS:
+        if phrase in state:
+            return logistic(0.06 * (below - 12))
+    raise ValueError("`state` has neither the page's words nor its JSON line")
 
 
 def confidence(values):
@@ -60,8 +90,9 @@ def answer(question, p):
         labels = list((question.get("criteria") or {}).keys())
         if len(labels) < 2:
             raise ValueError("a choice needs at least two labels")
-        rest = (1.0 - p) / (len(labels) - 1) if "flap" in labels else 1.0 / len(labels)
-        probs = {label: round(p if label == "flap" else rest, 6) for label in labels}
+        flap = next((label for label in labels if label in FLAP_LABELS), None)
+        rest = (1.0 - p) / (len(labels) - 1) if flap else 1.0 / len(labels)
+        probs = {label: round(p if label == flap else rest, 6) for label in labels}
         best = max(probs, key=probs.get)
         return {"type": "choice", "choice": best, "probabilities": probs, "confidence": confidence(list(probs.values()))}
     raise ValueError(f"unsupported question type {kind!r}")
@@ -142,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
             questions = body.get("questions")
             if not isinstance(questions, dict) or not questions:
                 return self.error(422, "`questions` must be a non-empty object of id: question.", "questions")
-            p = flap_probability(read_numbers(state))
+            p = state_probability(state)
             answers = {qid: answer(question, p) for qid, question in questions.items()}
         except (ValueError, KeyError, TypeError) as error:
             return self.error(422, f"The mock cannot read this request: {error}")

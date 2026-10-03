@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { BIRD, PIPES, createWorld, step, type World } from "./game"
+import { BIRD, PHYSICS, PIPES, createWorld, step, type World } from "./game"
 import {
-  Pilot, QUESTION_ID, RULES, buildQuestions, buildRequest, classify, describeState, findModel,
-  flapProbability, observe, shouldFlap, type PilotFailure,
+  DEFAULT_FORM, FLAP_ANSWER, FLAP_FRAMES, FLAP_RISE, FORMS, Pilot, QUESTION_ID, RULES, WORDS, WORDS_RULES,
+  asksSituation, buildQuestions, buildRequest, classify, describeNumbers, describeState, describeWords,
+  driftBelow, findModel, flapProbability, observe, readAnswer, shouldFlap, situation,
+  type Form, type Observation, type PilotFailure, type WordThresholds,
 } from "./pilot"
 import { HttpError, type SystemOneResponse } from "../api"
 
@@ -13,9 +15,9 @@ afterEach(() => vi.unstubAllGlobals())
    `answers` keyed by question id, `usage` with input/output tokens. The extra
    fields a newer gateway adds (`id`, `provider`, `usage.cost`) are included on
    purpose: the client must read through them. */
-const noulReply = (p: number): SystemOneResponse & Record<string, unknown> => ({
+const noulReply = (p: number, id = QUESTION_ID[DEFAULT_FORM]): SystemOneResponse & Record<string, unknown> => ({
   id: "so_123", provider: "colibri", model: "qwen36",
-  answers: { flap: { type: "noul", noul: p } },
+  answers: { [id]: { type: "noul", noul: p } },
   usage: { input_tokens: 182, output_tokens: 2, cost: 0 } as SystemOneResponse["usage"],
 })
 const choiceReply = (p: number): SystemOneResponse => ({
@@ -65,7 +67,8 @@ describe("the state the model reads", () => {
       gapMiddle: 38, gapTop: 38 + PIPES.gap / 2, gapBottom: 38 - PIPES.gap / 2,
       ahead: 120, inGap: false, speed: -4, gapHeight: PIPES.gap, ground: 238 - 540, top: 238,
     })
-    const text = describeState(o)
+    const text = describeState(o, "numbers")
+    expect(text).toBe(describeNumbers(o))
     expect(text.startsWith(RULES)).toBe(true)
     expect(text).toContain("the hummingbird is 38 px below the middle of the next gap and falling at 4.0 px per frame")
     expect(text).toContain("The next gap starts 120 px ahead and is 150 px tall")
@@ -87,11 +90,11 @@ describe("the state the model reads", () => {
     expect(o.inGap).toBe(true)
     expect(o.ahead).toBe(0)
     expect(o.exit).toBe(PIPES.width - 20 + BIRD.radius)
-    const text = describeState(o)
+    const text = describeNumbers(o)
     expect(text).toContain("level with the middle of the next gap and rising at 2.0 px per frame")
     expect(text).toContain(`It is inside the gap now, which ends ${o.exit} px ahead`)
     world.vy = 0
-    expect(describeState(observe(world))).toContain("hanging still")
+    expect(describeNumbers(observe(world))).toContain("hanging still")
   })
 
   it("never writes a negative zero", () => {
@@ -109,29 +112,184 @@ describe("the state the model reads", () => {
     for (let i = 0; i < 30; i++) step(world, i % 9 === 0)
     const before = structuredClone(world)
     expect(describeState(observe(world))).toBe(describeState(observe(world)))
+    expect(describeState(observe(world), "numbers")).toBe(describeState(observe(world), "numbers"))
     expect(world).toEqual(before)
   })
 })
 
-describe("the question", () => {
-  it("asks one noul by default and one choice with criteria on request", () => {
-    expect(buildQuestions("noul")).toEqual({
-      flap: { type: "noul", instructions: "Should the hummingbird flap its wings now?" },
+/* An observation with only what a test sets; everything else calm: in the
+   middle of an opening far ahead, level, far from the ground and the ceiling. */
+const obs = (over: Partial<Observation> = {}): Observation => ({
+  tick: 0, gapMiddle: 0, gapTop: 75, gapBottom: -75, gapHeight: PIPES.gap, ahead: 200, inGap: false, exit: 0,
+  speed: 0, ground: -270, top: 270, ...over,
+})
+/* The thresholds with no looking ahead, so a height in a test is the height
+   the words describe. */
+const NOW: WordThresholds = { ...WORDS, ahead: 0 }
+
+describe("the state in words", () => {
+  it("takes every threshold from the game's constants", () => {
+    expect(FLAP_RISE).toBe(60)
+    expect(FLAP_FRAMES).toBe(18)
+    expect(WORDS).toEqual({
+      ahead: 2,
+      inside: PIPES.gap / 2 - BIRD.radius,                  // 63
+      middle: PIPES.gap / 10,                               // 15
+      well: PIPES.gap / 2 - BIRD.radius + FLAP_RISE,        // 123
+      fast: PHYSICS.flap / 2,                               // 3.3
+      level: PHYSICS.gravity * 3,                           // 1.08
+      hit: FLAP_RISE / 2,                                   // 30
+      close: FLAP_RISE,                                     // 60
+      near: PIPES.speed * FLAP_FRAMES,                      // 43.2
+      coming: 2 * PIPES.speed * FLAP_FRAMES,                // 86.4
     })
-    const choice = buildQuestions("choice").move
-    expect(choice.type).toBe("choice")
-    expect(Object.keys((choice as { criteria: Record<string, string> }).criteria)).toEqual(["flap", "glide"])
-    const request = buildRequest(playing(), "noul", "qwen36")
-    expect(request.model).toBe("qwen36")
-    expect(typeof request.state).toBe("string")
-    expect(Object.keys(request.questions)).toEqual([QUESTION_ID.noul])
   })
 
-  it("reads p(flap) from either reply and refuses a reply without it", () => {
-    expect(flapProbability(noulReply(0.73), "noul")).toBe(0.73)
-    expect(flapProbability(choiceReply(0.2), "choice")).toBe(0.2)
-    expect(() => flapProbability(choiceReply(0.2), "noul")).toThrow(/flap/)
+  it("starts with the same rules sentence every time, then one line about the screen", () => {
+    const states = [obs(), obs({ gapMiddle: 200, speed: -9 }), obs({ gapMiddle: -150, speed: 6.6, inGap: true, ahead: 0 })]
+    for (const o of states) {
+      const text = describeWords(o)
+      expect(text.startsWith(`${WORDS_RULES}\n`)).toBe(true)
+      expect(text.split("\n")).toHaveLength(2)
+      expect(text).not.toMatch(/\d/)
+      expect(text).not.toMatch(/\bpx\b/)
+    }
+    expect(WORDS_RULES).toBe(
+      "A small hummingbird is flying through a row of pipes. It must pass through the opening " +
+      "between each pair of pipes. Hitting a pipe, the ground or the ceiling ends the game. " +
+      "Flapping makes it fly up; not flapping makes it drop.")
+    expect(describeState(obs())).toBe(describeWords(obs()))
+  })
+
+  it("places the hummingbird against the opening, the calmer word at each boundary", () => {
+    const at = (gapMiddle: number) => situation(obs({ gapMiddle }), NOW).position
+    const { middle, inside, well } = NOW
+    expect([at(well + 1), at(well), at(inside + 1), at(inside), at(middle + 1), at(middle)])
+      .toEqual(["wellBelow", "littleBelow", "littleBelow", "insideLow", "insideLow", "middle"])
+    expect([at(0), at(-middle), at(-middle - 1), at(-inside), at(-inside - 1), at(-well), at(-well - 1)])
+      .toEqual(["middle", "middle", "insideHigh", "insideHigh", "littleAbove", "littleAbove", "wellAbove"])
+  })
+
+  it("names the motion, the calmer word at each boundary", () => {
+    const at = (speed: number) => situation(obs({ speed }), NOW).motion
+    const { fast, level } = NOW
+    expect([at(-fast - 0.01), at(-fast), at(-level - 0.01), at(-level), at(0), at(level), at(level + 0.01), at(fast), at(fast + 0.01)])
+      .toEqual(["fallingFast", "falling", "falling", "level", "level", "level", "rising", "rising", "risingFast"])
+  })
+
+  it("says when the ground or the ceiling is close or about to be hit", () => {
+    /* the gap between the hummingbird's edge and the ground or the ceiling */
+    const ground = (gap: number) => situation(obs({ ground: -(gap + BIRD.radius) }), NOW).ground
+    const ceiling = (gap: number) => situation(obs({ top: gap + BIRD.radius }), NOW).ceiling
+    for (const near of [ground, ceiling]) {
+      expect([near(NOW.hit - 1), near(NOW.hit), near(NOW.close - 1), near(NOW.close)]).toEqual(["hit", "close", "close", null])
+    }
+    expect(describeWords(obs({ gapMiddle: 200, ground: -(10 + BIRD.radius) }), NOW)).toContain(" It is about to hit the ground.")
+    expect(describeWords(obs({ gapMiddle: 200, ground: -(40 + BIRD.radius) }), NOW)).toContain(" The ground is close.")
+    expect(describeWords(obs({ gapMiddle: -200, top: 10 + BIRD.radius }), NOW)).toContain(" It is about to hit the ceiling.")
+    expect(describeWords(obs({ gapMiddle: -200, top: 40 + BIRD.radius }), NOW)).toContain(" The ceiling is close.")
+    expect(describeWords(obs(), NOW).split("\n")[1]).not.toMatch(/ground|ceiling|hit/)
+  })
+
+  it("says how far the next pipes are, or that it is passing between them", () => {
+    const at = (ahead: number, inGap = false) => situation(obs({ ahead, inGap }), NOW).pipes
+    expect([at(0, true), at(0), at(NOW.near), at(NOW.near + 1), at(NOW.coming), at(NOW.coming + 1)])
+      .toEqual(["between", "veryClose", "veryClose", "coming", "coming", "far"])
+  })
+
+  it("reads as one plain sentence", () => {
+    expect(describeWords(obs({ gapMiddle: 90, speed: -5, ahead: 30, ground: -(40 + BIRD.radius) }), NOW)).toBe(
+      `${WORDS_RULES}\nThe hummingbird is falling fast and is a little below the opening. ` +
+      "The ground is close. The next pipes are very close.")
+    expect(describeWords(obs({ gapMiddle: 0, inGap: true, ahead: 0 }), NOW)).toBe(
+      `${WORDS_RULES}\nThe hummingbird is gliding level and is right in the middle of the opening. ` +
+      "It is passing between the pipes now.")
+  })
+
+  it("describes the heights where the hummingbird will be when the answer lands", () => {
+    /* falling fast in the middle: two steps later it is near the bottom edge */
+    const o = obs({ gapMiddle: 5, speed: -7 })
+    expect(driftBelow(o, 2)).toBeCloseTo(5 + (7 + 0.36) + (7 + 0.72))
+    expect(situation(o, NOW).position).toBe("middle")
+    expect(situation(o).position).toBe("insideLow")
+    expect(situation(o).motion).toBe("fallingFast")
+    /* the fall stops at the terminal speed */
+    expect(driftBelow(obs({ speed: -PHYSICS.terminal }), 3)).toBeCloseTo(3 * PHYSICS.terminal)
+    /* the ground and the ceiling move with it */
+    expect(situation(obs({ gapMiddle: 200, speed: -8, ground: -(45 + BIRD.radius) })).ground).toBe("hit")
+    expect(situation(obs({ gapMiddle: 200, speed: -8, ground: -(45 + BIRD.radius) }), NOW).ground).toBe("close")
+  })
+})
+
+const choiceAnswer = (probabilities: Record<string, number>, choice?: string) => ({
+  type: "choice" as const, choice: choice ?? Object.keys(probabilities)[0], probabilities, confidence: 0.5,
+})
+const replyFor = (form: Form, answer: SystemOneResponse["answers"][string]): SystemOneResponse =>
+  ({ model: "m", answers: { [QUESTION_ID[form]]: answer } })
+
+describe("the question", () => {
+  it("asks about the situation by default: is the hummingbird too low?", () => {
+    expect(DEFAULT_FORM).toBe("low")
+    expect(FORMS).toEqual(["low", "where", "danger", "noul", "choice"])
+    expect(buildQuestions("low")).toEqual({ low: { type: "noul", instructions: "Is the hummingbird too low?" } })
+    const request = buildRequest(playing(), DEFAULT_FORM, "qwen36")
+    expect(request.model).toBe("qwen36")
+    expect(request.state.startsWith(WORDS_RULES)).toBe(true)
+    expect(Object.keys(request.questions)).toEqual(["low"])
+    expect(buildRequest(playing(), "noul", "m", "numbers").state.startsWith(RULES)).toBe(true)
+  })
+
+  it("has three situation questions and two move questions, each with the answer that means flap", () => {
+    expect(FORMS.filter(asksSituation)).toEqual(["low", "where", "danger"])
+    expect(FLAP_ANSWER).toEqual({ low: "yes", where: "below", danger: "ground", noul: "yes", choice: "flap" })
+    expect(buildQuestions("where")).toEqual({
+      where: {
+        type: "choice", instructions: "Where is the hummingbird compared with the opening?",
+        criteria: {
+          below: "lower than the opening, or near the ground",
+          above: "higher than the opening, or near the ceiling",
+          inside: "level with the opening",
+        },
+      },
+    })
+    expect(buildQuestions("danger")).toEqual({
+      danger: {
+        type: "choice", instructions: "What is the danger right now?",
+        criteria: {
+          ground: "it may hit the ground or the bottom pipe",
+          ceiling: "it may hit the ceiling or the top pipe",
+          none: "it is safe",
+        },
+      },
+    })
+    expect(buildQuestions("noul")).toEqual({ flap: { type: "noul", instructions: "Should the hummingbird flap its wings now?" } })
+    expect(Object.keys((buildQuestions("choice").move as { criteria: Record<string, string> }).criteria)).toEqual(["flap", "glide"])
+    /* each form's question goes out under its own id, and a caller cannot change the shared one */
+    for (const form of FORMS) expect(Object.keys(buildQuestions(form))).toEqual([QUESTION_ID[form]])
+    ;(buildQuestions("where").where as { instructions: string }).instructions = "changed"
+    expect(buildQuestions("where").where.instructions).toBe("Where is the hummingbird compared with the opening?")
+  })
+
+  it("turns each answer into the probability that means flap, and keeps what the model said", () => {
+    expect(readAnswer(replyFor("low", { type: "noul", noul: 0.8 }), "low")).toEqual({ p: 0.8, said: "yes" })
+    expect(readAnswer(replyFor("low", { type: "noul", noul: 0.5 }), "low")).toEqual({ p: 0.5, said: "no" })
+    expect(readAnswer(replyFor("noul", { type: "noul", noul: 0.3 }), "noul")).toEqual({ p: 0.3, said: "no" })
+    expect(readAnswer(replyFor("where", choiceAnswer({ below: 0.2, above: 0.1, inside: 0.7 }, "inside")), "where"))
+      .toEqual({ p: 0.2, said: "inside" })
+    expect(readAnswer(replyFor("danger", choiceAnswer({ ground: 0.6, ceiling: 0.1, none: 0.3 }, "ground")), "danger"))
+      .toEqual({ p: 0.6, said: "ground" })
+    /* a reply without a usable `choice` still says which label won */
+    expect(readAnswer(replyFor("where", { type: "choice", probabilities: { below: 0.1, above: 0.6, inside: 0.3 } } as never), "where").said)
+      .toBe("above")
+    expect(flapProbability(replyFor("choice", choiceAnswer({ flap: 0.2, glide: 0.8 })), "choice")).toBe(0.2)
+  })
+
+  it("refuses a reply that does not carry the probability it needs", () => {
+    expect(() => readAnswer(replyFor("where", choiceAnswer({ above: 0.5, inside: 0.5 })), "where")).toThrow(/where.*below/)
+    expect(() => readAnswer(replyFor("low", choiceAnswer({ below: 0.5, above: 0.5 })), "low")).toThrow(/low/)
+    expect(() => readAnswer(replyFor("danger", { type: "noul", noul: 0.4 }), "danger")).toThrow(/danger/)
     expect(() => flapProbability({ model: "m", answers: { flap: { type: "noul", noul: Number.NaN } } }, "noul")).toThrow()
+    expect(() => flapProbability({ model: "m", answers: { flap: { type: "noul", noul: 1.2 } } }, "noul")).toThrow()
     expect(() => flapProbability({ model: "m", answers: {} } as SystemOneResponse, "choice")).toThrow(/move/)
   })
 
@@ -155,9 +313,9 @@ describe("the pilot", () => {
     expect(init.method).toBe("POST")
     expect(init.headers).toMatchObject({ Authorization: "Bearer secret", "Content-Type": "application/json" })
     const body = JSON.parse(String(init.body))
-    expect(body).toEqual({ model: "qwen36", state: describeState(observe(world)), questions: buildQuestions("noul") })
+    expect(body).toEqual({ model: "qwen36", state: describeWords(observe(world)), questions: buildQuestions("low") })
     const decision = pilot.take(world)!
-    expect(decision).toMatchObject({ flap: true, p: 0.62, threshold: 0.5, engineMs: 37, model: "qwen36" })
+    expect(decision).toMatchObject({ flap: true, p: 0.62, said: "yes", form: "low", threshold: 0.5, engineMs: 37, model: "qwen36" })
 
     /* the same answer under a higher threshold is a glide */
     pilot.threshold = 0.7
@@ -171,7 +329,24 @@ describe("the pilot", () => {
     const world = playing()
     const pilot = new Pilot({ baseUrl: "http://x/v1", apiKey: "", model: "m", form: "choice", threshold: 0.6 })
     await pilot.poll(world)
-    expect(pilot.take(world)).toMatchObject({ flap: true, p: 0.81 })
+    expect(pilot.take(world)).toMatchObject({ flap: true, p: 0.81, said: "flap", form: "choice" })
+  })
+
+  it("flaps on below when it asks where the hummingbird is, and sends numbers when told to", async () => {
+    const fetchMock = vi.fn(async () => json(replyFor("where", choiceAnswer({ below: 0.7, above: 0.1, inside: 0.2 }, "below"))))
+    vi.stubGlobal("fetch", fetchMock)
+    const world = playing()
+    const pilot = new Pilot({ baseUrl: "http://x/v1", apiKey: "", model: "m", form: "where", style: "numbers" })
+    await pilot.poll(world)
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body))
+    expect(body.state).toBe(describeNumbers(observe(world)))
+    expect(body.questions).toEqual(buildQuestions("where"))
+    expect(pilot.take(world)).toMatchObject({ flap: true, p: 0.7, said: "below", form: "where" })
+    /* an answer that says inside, with p(below) under the threshold, glides */
+    fetchMock.mockImplementation(async () => json(replyFor("where", choiceAnswer({ below: 0.3, above: 0.1, inside: 0.6 }, "inside"))))
+    step(world, false)
+    await pilot.poll(world)
+    expect(pilot.take(world)).toMatchObject({ flap: false, p: 0.3, said: "inside" })
   })
 
   it("keeps one request in flight while the game runs on", async () => {

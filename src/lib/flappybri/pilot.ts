@@ -1,9 +1,10 @@
 /* FlappyBri: the model at the controls.
  *
- * Every step the game can be described in a few sentences: where the next gap
- * is, how fast the hummingbird is falling. The pilot sends that description to
- * POST /v1/systemone with one typed question, reads the probability of
- * flapping, and flaps when it is above the threshold.
+ * Every step the game can be described in a few sentences: where the
+ * hummingbird is against the next opening, how it moves, what is close. The
+ * pilot sends that description to POST /v1/systemone with one typed question,
+ * reads the probability of the answer that means flap (by default yes, to "Is
+ * the hummingbird too low?"), and flaps when it is above the threshold.
  *
  * REAL TIME, HONESTLY. One request at a time, and the game does not wait for
  * it: while the model reads, the pipes keep coming. The answer is about the
@@ -72,6 +73,15 @@ export function observe(world: World): Observation {
 export const FLAP_RISE = Math.round(PHYSICS.flap ** 2 / (2 * PHYSICS.gravity))
 export const FLAP_FRAMES = Math.round(PHYSICS.flap / PHYSICS.gravity)
 
+/* Two ways to write the same screen. `words` (the default) says it the way a
+   person would, with no numbers: where the hummingbird is against the opening,
+   how it moves, what is close. `numbers` gives the distances in px and the
+   speed in px per frame, for a model that reads numbers well (a language model
+   through option scoring may). Each starts with its own constant rules, so an
+   engine that reuses a cached prefix reads only the part that changed. */
+export type Style = "words" | "numbers"
+export const STYLES: readonly Style[] = ["words", "numbers"]
+
 export const RULES =
   "FlappyBri: a hummingbird flies right through the gaps between pipes. " +
   "Touching a pipe, the ground or the top edge ends the game. " +
@@ -79,11 +89,8 @@ export const RULES =
 
 const updown = (value: number) => (value >= 0 ? `${value} px above` : `${-value} px below`)
 
-/* The state is a short paragraph a person could act on, then the same numbers
-   as compact JSON. The paragraph comes first and the rules first of all: the
-   part that never changes leads, so an engine that reuses a cached prefix
-   reads only the tail again. */
-export function describeState(o: Observation): string {
+/* The numbers: a short paragraph, then the same numbers as compact JSON. */
+export function describeNumbers(o: Observation): string {
   const vertical = o.gapMiddle === 0
     ? "level with the middle of the next gap"
     : `${Math.abs(o.gapMiddle)} px ${o.gapMiddle > 0 ? "below" : "above"} the middle of the next gap`
@@ -107,49 +114,245 @@ export function describeState(o: Observation): string {
   ].join("\n")
 }
 
+/* The words. One sentence of rules that never changes, then the screen in a
+   few plain sentences. */
+export const WORDS_RULES =
+  "A small hummingbird is flying through a row of pipes. It must pass through the opening " +
+  "between each pair of pipes. Hitting a pipe, the ground or the ceiling ends the game. " +
+  "Flapping makes it fly up; not flapping makes it drop."
+
+/* Where the hummingbird would be after `steps` steps without a flap: how many
+   px below the middle of the opening (negative: above it). */
+export function driftBelow(o: Observation, steps: number): number {
+  let below = o.gapMiddle
+  let fall = -o.speed
+  for (let i = 0; i < steps; i++) {
+    fall = Math.min(fall + PHYSICS.gravity, PHYSICS.terminal)
+    below += fall
+  }
+  return below
+}
+
+/* Where each word starts, all from the game's own constants. Heights are the
+   hummingbird's middle against the middle of the opening, speeds in px per
+   frame, distances in px.
+
+   The heights are where the hummingbird will be `ahead` steps from now, not
+   where it is: an answer lands a couple of steps after the screen it was
+   about ("Match the model's pace" aims at 2), and a hummingbird falling fast
+   in the middle of the opening is, by then, near its bottom edge. Read the
+   plain way (flap when the words put it lower than the middle), these words
+   fly every round to the end when answers land 1, 2 or 3 steps late; words
+   for where it is now lose nearly every round at 3 (oracle.test.ts). Its
+   motion is described as it is. */
+export const WORDS = {
+  /* Steps ahead the heights are measured. */
+  ahead: 2,
+  /* Inside the opening: the whole body fits, a radius away from either edge. */
+  inside: PIPES.gap / 2 - BIRD.radius,
+  /* The middle band of the opening, a tenth of its height either side of the
+     middle; between it and an edge, near that edge. */
+  middle: PIPES.gap / 10,
+  /* Past this, one flap is no longer enough to get back level with the opening. */
+  well: PIPES.gap / 2 - BIRD.radius + FLAP_RISE,
+  /* Faster than half a flap's speed, up or down, is fast. */
+  fast: PHYSICS.flap / 2,
+  /* Within three frames of gravity of a standstill: the top of a hop. */
+  level: PHYSICS.gravity * 3,
+  /* The ground or the ceiling closer than half a flap: about to hit it. */
+  hit: FLAP_RISE / 2,
+  /* Closer than one flap: close. */
+  close: FLAP_RISE,
+  /* Pipes that arrive within one flap's time are very close; within two, coming up. */
+  near: PIPES.speed * FLAP_FRAMES,
+  coming: 2 * PIPES.speed * FLAP_FRAMES,
+} as const
+
+export type WordThresholds = { [K in keyof typeof WORDS]: number }
+
+export type Position =
+  | "wellBelow" | "littleBelow" | "insideLow" | "middle" | "insideHigh" | "littleAbove" | "wellAbove"
+export type Motion = "fallingFast" | "falling" | "level" | "rising" | "risingFast"
+export type Nearness = "hit" | "close" | null
+export type Pipes = "between" | "veryClose" | "coming" | "far"
+
+export interface Situation {
+  position: Position
+  motion: Motion
+  ground: Nearness
+  ceiling: Nearness
+  pipes: Pipes
+}
+
+/* The observation sorted into words. A boundary value belongs to the calmer
+   side: exactly `middle` px below the middle is still the middle. */
+export function situation(o: Observation, w: WordThresholds = WORDS): Situation {
+  const below = driftBelow(o, w.ahead)   // > 0: the hummingbird will be under the middle
+  const moved = below - o.gapMiddle      // px it will have dropped by then
+  const position: Position =
+    below > w.well ? "wellBelow"
+      : below > w.inside ? "littleBelow"
+      : below > w.middle ? "insideLow"
+      : below >= -w.middle ? "middle"
+      : below >= -w.inside ? "insideHigh"
+      : below >= -w.well ? "littleAbove"
+      : "wellAbove"
+  const s = o.speed                  // > 0: rising
+  const motion: Motion =
+    s < -w.fast ? "fallingFast"
+      : s < -w.level ? "falling"
+      : s <= w.level ? "level"
+      : s <= w.fast ? "rising"
+      : "risingFast"
+  const near = (gap: number): Nearness => (gap < w.hit ? "hit" : gap < w.close ? "close" : null)
+  const pipes: Pipes = o.inGap ? "between"
+    : o.ahead <= w.near ? "veryClose"
+    : o.ahead <= w.coming ? "coming"
+    : "far"
+  return {
+    position, motion,
+    ground: near(-(o.ground + moved) - BIRD.radius),
+    ceiling: near(o.top + moved - BIRD.radius),
+    pipes,
+  }
+}
+
+const POSITION_WORDS: Record<Position, string> = {
+  wellBelow: "well below the opening",
+  littleBelow: "a little below the opening",
+  insideLow: "inside the opening, near its bottom edge",
+  middle: "right in the middle of the opening",
+  insideHigh: "inside the opening, near its top edge",
+  littleAbove: "a little above the opening",
+  wellAbove: "well above the opening",
+}
+const MOTION_WORDS: Record<Motion, string> = {
+  fallingFast: "falling fast",
+  falling: "falling",
+  level: "gliding level",
+  rising: "rising",
+  risingFast: "rising fast",
+}
+const PIPES_WORDS: Record<Pipes, string> = {
+  between: "It is passing between the pipes now.",
+  veryClose: "The next pipes are very close.",
+  coming: "The next pipes are coming up.",
+  far: "The next pipes are still far.",
+}
+
+export function describeWords(o: Observation, w: WordThresholds = WORDS): string {
+  const it = situation(o, w)
+  const ground = it.ground === "hit" ? " It is about to hit the ground." : it.ground === "close" ? " The ground is close." : ""
+  const ceiling = it.ceiling === "hit" ? " It is about to hit the ceiling." : it.ceiling === "close" ? " The ceiling is close." : ""
+  return `${WORDS_RULES}\nThe hummingbird is ${MOTION_WORDS[it.motion]} and is ${POSITION_WORDS[it.position]}.` +
+    `${ground}${ceiling} ${PIPES_WORDS[it.pipes]}`
+}
+
+export function describeState(o: Observation, style: Style = "words"): string {
+  return style === "numbers" ? describeNumbers(o) : describeWords(o)
+}
+
 /* ---- the question -------------------------------------------------------------- */
 
-/* `noul` is one yes/no question, two one-token answers: the lightest request,
-   the default. `choice` names the two moves and says what each does, which
-   costs a few more tokens and gives the model the consequences to weigh. */
-export type Form = "noul" | "choice"
+/* Five questions. The first three ask about the situation, not the move, and
+   the game turns the answer into the move: a model that cannot tell when to
+   flap can still tell where the hummingbird is. The last two ask for the move
+   itself.
 
-export const QUESTION_ID: Record<Form, string> = { noul: "flap", choice: "move" }
+     low     noul    "Is the hummingbird too low?"           yes means flap (the default)
+     where   choice  below / above / inside                  below means flap
+     danger  choice  ground / ceiling / none                 ground means flap
+     noul    noul    "Should the hummingbird flap its wings now?"
+     choice  choice  flap / glide
+
+   `noul` and `choice` keep their old names so saved settings still load. */
+export type Form = "low" | "where" | "danger" | "noul" | "choice"
+export const FORMS: readonly Form[] = ["low", "where", "danger", "noul", "choice"]
+export const DEFAULT_FORM: Form = "low"
+
+export const QUESTION_ID: Record<Form, string> = {
+  low: "low", where: "where", danger: "danger", noul: "flap", choice: "move",
+}
+
+/* The answer that means flap: for a noul the probability of yes, for a choice
+   the probability of this label. */
+export const FLAP_ANSWER: Record<Form, string> = {
+  low: "yes", where: "below", danger: "ground", noul: "yes", choice: "flap",
+}
+
+/* The questions that describe the situation rather than choose the move. */
+export const asksSituation = (form: Form) => form === "low" || form === "where" || form === "danger"
 
 const FLAP_MEANS = `beat the wings once: it rises about ${FLAP_RISE} px over the next ${FLAP_FRAMES} frames`
 const GLIDE_MEANS = "do nothing: it keeps falling, a little faster every frame"
 
-export function buildQuestions(form: Form): Record<string, SystemOneQuestion> {
-  if (form === "choice") {
-    return {
-      [QUESTION_ID.choice]: {
-        type: "choice",
-        instructions: "What should the hummingbird do now?",
-        criteria: { flap: FLAP_MEANS, glide: GLIDE_MEANS },
-      },
-    }
-  }
-  return { [QUESTION_ID.noul]: { type: "noul", instructions: "Should the hummingbird flap its wings now?" } }
+const QUESTIONS: Record<Form, SystemOneQuestion> = {
+  low: { type: "noul", instructions: "Is the hummingbird too low?" },
+  where: {
+    type: "choice",
+    instructions: "Where is the hummingbird compared with the opening?",
+    criteria: {
+      below: "lower than the opening, or near the ground",
+      above: "higher than the opening, or near the ceiling",
+      inside: "level with the opening",
+    },
+  },
+  danger: {
+    type: "choice",
+    instructions: "What is the danger right now?",
+    criteria: {
+      ground: "it may hit the ground or the bottom pipe",
+      ceiling: "it may hit the ceiling or the top pipe",
+      none: "it is safe",
+    },
+  },
+  noul: { type: "noul", instructions: "Should the hummingbird flap its wings now?" },
+  choice: {
+    type: "choice",
+    instructions: "What should the hummingbird do now?",
+    criteria: { flap: FLAP_MEANS, glide: GLIDE_MEANS },
+  },
 }
 
-export function buildRequest(world: World, form: Form, model: string): SystemOneRequest {
-  return { model, state: describeState(observe(world)), questions: buildQuestions(form) }
+export function buildQuestions(form: Form): Record<string, SystemOneQuestion> {
+  return { [QUESTION_ID[form]]: structuredClone(QUESTIONS[form]) }
+}
+
+export function buildRequest(world: World, form: Form, model: string, style: Style = "words"): SystemOneRequest {
+  return { model, state: describeState(observe(world), style), questions: buildQuestions(form) }
 }
 
 export class AnswerError extends Error {}
 
-/* p(flap) out of the reply: `noul` is the probability of yes, `choice` carries
-   one probability per label. Anything else is a reply this game cannot play on. */
-export function flapProbability(response: SystemOneResponse, form: Form): number {
-  const answer = response?.answers?.[QUESTION_ID[form]]
-  const p = answer?.type === "noul" ? answer.noul
-    : answer?.type === "choice" ? answer.probabilities?.flap
-    : undefined
-  if (typeof p !== "number" || !Number.isFinite(p) || p < 0 || p > 1) {
-    throw new AnswerError(`The reply has no probability for "${QUESTION_ID[form]}".`)
-  }
-  return p
+/* What the model said: the probability that means flap, and its own answer in
+   its own words (yes or no, or the label it picked), for the panel. */
+export interface ModelAnswer {
+  p: number
+  said: string
 }
+
+const isProbability = (p: unknown): p is number => typeof p === "number" && Number.isFinite(p) && p >= 0 && p <= 1
+
+export function readAnswer(response: SystemOneResponse, form: Form): ModelAnswer {
+  const id = QUESTION_ID[form]
+  const answer = response?.answers?.[id]
+  const want = FLAP_ANSWER[form]
+  const noul = QUESTIONS[form].type === "noul"
+  if (noul && answer?.type === "noul" && isProbability(answer.noul)) {
+    return { p: answer.noul, said: answer.noul > 0.5 ? "yes" : "no" }
+  }
+  if (!noul && answer?.type === "choice" && answer.probabilities && isProbability(answer.probabilities[want])) {
+    const probabilities = answer.probabilities
+    const said = typeof answer.choice === "string" && answer.choice in probabilities
+      ? answer.choice
+      : Object.keys(probabilities).reduce((a, b) => (probabilities[b] > probabilities[a] ? b : a))
+    return { p: probabilities[want], said }
+  }
+  throw new AnswerError(`The reply has no probability for "${id}"${noul ? "" : ` (${want})`}.`)
+}
+
+/* p(flap) out of the reply: the probability of the answer that means flap. */
+export const flapProbability = (response: SystemOneResponse, form: Form): number => readAnswer(response, form).p
 
 /* Strictly above: at exactly the threshold the model is not saying flap. */
 export const shouldFlap = (p: number, threshold: number) => p > threshold
@@ -201,7 +404,11 @@ export async function findModel(baseUrl: string, apiKey: string, preferred: stri
 
 export interface Decision {
   flap: boolean
+  /* The probability of the answer that means flap. */
   p: number
+  /* The model's own answer: yes or no, or the label it picked. */
+  said: string
+  form: Form
   threshold: number
   latencyMs: number
   engineMs: number | null
@@ -217,6 +424,7 @@ export interface PilotOptions {
   apiKey: string
   model: string
   form?: Form
+  style?: Style
   threshold?: number
   window?: number
   now?: () => number
@@ -232,6 +440,7 @@ export class Pilot {
   apiKey: string
   model: string
   form: Form
+  style: Style
   threshold: number
   readonly latency: LatencyWindow
   failure: PilotFailure | null = null
@@ -250,7 +459,8 @@ export class Pilot {
     this.baseUrl = options.baseUrl
     this.apiKey = options.apiKey
     this.model = options.model
-    this.form = options.form ?? "noul"
+    this.form = options.form ?? DEFAULT_FORM
+    this.style = options.style ?? "words"
     this.threshold = options.threshold ?? 0.5
     this.latency = new LatencyWindow(options.window ?? 100)
     this.now = options.now ?? (() => performance.now())
@@ -308,7 +518,7 @@ export class Pilot {
     const controller = new AbortController()
     this.controller = controller
     const form = this.form
-    const request = buildRequest(world, form, this.model)
+    const request = buildRequest(world, form, this.model, this.style)
     const askedTick = world.tick
     this.askedTick = askedTick
     this.lastState = request.state
@@ -316,12 +526,12 @@ export class Pilot {
     try {
       const reply = await askSystemOne(this.baseUrl, this.apiKey, request, controller.signal)
       if (generation !== this.generation) return
-      const p = flapProbability(reply.response, form)
+      const { p, said } = readAnswer(reply.response, form)
       const at = this.now()
       const latencyMs = at - started
       this.latency.push(latencyMs, at)
       this.arrived = {
-        flap: shouldFlap(p, this.threshold), p, threshold: this.threshold, latencyMs,
+        flap: shouldFlap(p, this.threshold), p, said, form, threshold: this.threshold, latencyMs,
         engineMs: reply.engineMs, askedTick, stepsLate: 0,
         model: typeof reply.response.model === "string" && reply.response.model ? reply.response.model : this.model,
       }
